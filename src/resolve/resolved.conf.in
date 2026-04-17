@@ -43,3 +43,5 @@
 #ResolveUnicastSingleLabel=no
 #StaleRetentionSec=0
 #RefuseRecordTypes=
+#DNSFilterList=
+#DNSFilter=no

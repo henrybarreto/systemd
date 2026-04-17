@@ -72,6 +72,7 @@ BUS_ERROR_MAP_ELF_REGISTER const sd_bus_error_map bus_common_errors[] = {
         SD_BUS_ERROR_MAP(BUS_ERROR_INVALID_REPLY,                EINVAL),
         SD_BUS_ERROR_MAP(BUS_ERROR_NO_SUCH_RR,                   ENOENT),
         SD_BUS_ERROR_MAP(BUS_ERROR_CNAME_LOOP,                   EDEADLK),
+        SD_BUS_ERROR_MAP(BUS_ERROR_DNS_QUERY_DENIED,             EPERM),
         SD_BUS_ERROR_MAP(BUS_ERROR_ABORTED,                      ECANCELED),
         SD_BUS_ERROR_MAP(BUS_ERROR_NO_SUCH_SERVICE,              EUNATCH),
         SD_BUS_ERROR_MAP(BUS_ERROR_INCONSISTENT_SERVICE_RECORDS, EUNATCH),

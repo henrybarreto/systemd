@@ -285,6 +285,14 @@ static int append_address(sd_bus_message *reply, DnsResourceRecord *rr, int ifin
         return 0;
 }
 
+static bool dns_query_was_denied(DnsQuery *q) {
+        if (q->answer_filtered)
+                return true;
+
+        const char *name = dns_question_first_name(q->question_idna);
+        return name && manager_is_domain_in_deny_list(q->manager, name);
+}
+
 static void bus_method_resolve_hostname_complete(DnsQuery *query) {
         _cleanup_(dns_resource_record_unrefp) DnsResourceRecord *canonical = NULL;
         _cleanup_(sd_bus_message_unrefp) sd_bus_message *reply = NULL;
@@ -344,7 +352,14 @@ static void bus_method_resolve_hostname_complete(DnsQuery *query) {
         }
 
         if (added <= 0) {
-                r = reply_method_errorf(q, BUS_ERROR_NO_SUCH_RR, "'%s' does not have any RR of the requested type", dns_query_string(q));
+                if (dns_query_was_denied(q))
+                        r = reply_method_errorf(q, BUS_ERROR_DNS_QUERY_DENIED, "'%s' blocked by deny list", dns_query_string(q));
+                else
+                        r = reply_method_errorf(
+                                        q,
+                                        BUS_ERROR_NO_SUCH_RR,
+                                        "'%s' does not have any RR of the requested type",
+                                        dns_query_string(q));
                 goto finish;
         }
 
@@ -592,7 +607,16 @@ static void bus_method_resolve_address_complete(DnsQuery *query) {
         }
 
         if (added <= 0) {
-                r = reply_method_errorf(q, BUS_ERROR_NO_SUCH_RR,
+                if (dns_query_was_denied(q))
+                        r = reply_method_errorf(
+                                        q,
+                                        BUS_ERROR_DNS_QUERY_DENIED,
+                                        "Address %s blocked by deny list",
+                                        IN_ADDR_TO_STRING(q->request_family, &q->request_address));
+                else
+                        r = reply_method_errorf(
+                                        q,
+                                        BUS_ERROR_NO_SUCH_RR,
                                         "Address %s does not have any RR of requested type",
                                         IN_ADDR_TO_STRING(q->request_family, &q->request_address));
                 goto finish;
@@ -756,7 +780,14 @@ static void bus_method_resolve_record_complete(DnsQuery *query) {
         }
 
         if (added <= 0) {
-                r = reply_method_errorf(q, BUS_ERROR_NO_SUCH_RR, "Name '%s' does not have any RR of the requested type", dns_query_string(q));
+                if (dns_query_was_denied(q))
+                        r = reply_method_errorf(q, BUS_ERROR_DNS_QUERY_DENIED, "'%s' blocked by deny list", dns_query_string(q));
+                else
+                        r = reply_method_errorf(
+                                        q,
+                                        BUS_ERROR_NO_SUCH_RR,
+                                        "'%s' does not have any RR of the requested type",
+                                        dns_query_string(q));
                 goto finish;
         }
 
@@ -1106,7 +1137,14 @@ static void resolve_service_all_complete(DnsQuery *query) {
         }
 
         if (added <= 0) {
-                r = reply_method_errorf(q, BUS_ERROR_NO_SUCH_RR, "'%s' does not have any RR of the requested type", dns_query_string(q));
+                if (dns_query_was_denied(q))
+                        r = reply_method_errorf(q, BUS_ERROR_DNS_QUERY_DENIED, "'%s' blocked by deny list", dns_query_string(q));
+                else
+                        r = reply_method_errorf(
+                                        q,
+                                        BUS_ERROR_NO_SUCH_RR,
+                                        "'%s' does not have any RR of the requested type",
+                                        dns_query_string(q));
                 goto finish;
         }
 
@@ -1294,7 +1332,14 @@ static void bus_method_resolve_service_complete(DnsQuery *query) {
         }
 
         if (found <= 0) {
-                r = reply_method_errorf(q, BUS_ERROR_NO_SUCH_RR, "'%s' does not have any RR of the requested type", dns_query_string(q));
+                if (dns_query_was_denied(q))
+                        r = reply_method_errorf(q, BUS_ERROR_DNS_QUERY_DENIED, "'%s' blocked by deny list", dns_query_string(q));
+                else
+                        r = reply_method_errorf(
+                                        q,
+                                        BUS_ERROR_NO_SUCH_RR,
+                                        "'%s' does not have any RR of the requested type",
+                                        dns_query_string(q));
                 goto finish;
         }
 

@@ -140,6 +140,12 @@ executables += [
                 'sources' : files('test-dns-synthesize.c'),
         },
         resolve_test_template + {
+                'sources' : files('test-dns-deny-list.c'),
+        },
+        resolve_test_template + {
+                'sources' : files('test-deny-list-parse.c'),
+        },
+        resolve_test_template + {
                 'sources' : files('test-dns-zone.c'),
         },
         resolve_test_template + {

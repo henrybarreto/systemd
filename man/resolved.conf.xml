@@ -391,6 +391,24 @@ DNSStubListenerExtra=udp:[2001:db8:0:f102::13]:9953</programlisting>
       </varlistentry>
 
       <varlistentry>
+        <term><varname>DNSFilter=</varname></term>
+        <listitem><para>Takes a boolean argument. If <literal>yes</literal>, responses from DNS sources
+        are filtered against the configured filter list before they are returned to clients. If
+        <literal>no</literal> (the default), filtering is disabled.</para>
+
+        <xi:include href="version-info.xml" xpointer="v258"/></listitem>
+      </varlistentry>
+
+      <varlistentry>
+        <term><varname>DNSFilterList=</varname><replaceable>PATH</replaceable></term>
+        <listitem><para>Takes a path to a filter list file. If set, the file is read and its entries are
+        used to filter matching DNS records when <varname>DNSFilter=</varname> is enabled. The path should
+        point to a regular file readable by <command>systemd-resolved</command>. Defaults to unset.</para>
+
+        <xi:include href="version-info.xml" xpointer="v258"/></listitem>
+      </varlistentry>
+
+      <varlistentry>
         <term><varname>ResolveUnicastSingleLabel=</varname></term>
         <listitem><para>Takes a boolean argument. When false (the default),
         <command>systemd-resolved</command> will not resolve A and AAAA queries for single-label names over

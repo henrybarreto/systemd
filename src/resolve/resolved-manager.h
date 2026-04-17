@@ -132,6 +132,12 @@ typedef struct Manager {
         /* List of refused DNS Record Types */
         Set *refuse_record_types;
 
+        /* DNS deny list */
+        char *dns_deny_list_file;
+        bool dns_deny_list_enabled;
+        Set *dns_deny_list;
+        Set *dns_deny_list_subdomains_only;
+
         OrderedSet *dns_extra_stub_listeners;
 
         /* Local DNS stub on 127.0.0.53:53 */

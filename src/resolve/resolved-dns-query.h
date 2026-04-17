@@ -89,6 +89,7 @@ typedef struct DnsQuery {
         bool previous_redirect_non_confidential:1;
         bool previous_redirect_non_synthetic:1;
         bool request_address_valid:1;
+        bool answer_filtered:1;
 
         /* Bus + Varlink client information */
         sd_bus_message *bus_request;
@@ -159,5 +160,8 @@ bool dns_query_fully_confidential(DnsQuery *q);
 bool dns_query_fully_authoritative(DnsQuery *q);
 
 int validate_and_mangle_query_flags(Manager *manager, uint64_t *flags, const char *name, uint64_t ok);
+
+bool manager_is_domain_in_deny_list(Manager *manager, const char *domain);
+const char *manager_find_deny_list_match_rr(Manager *manager, const DnsResourceRecord *rr);
 
 uint64_t dns_query_reply_flags_make(DnsQuery *q);

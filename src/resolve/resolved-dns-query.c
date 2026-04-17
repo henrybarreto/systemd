@@ -608,6 +608,174 @@ static int manager_validate_and_mangle_question(Manager *manager, DnsQuestion **
         return 0;
 }
 
+static const char *manager_find_deny_list_match(Manager *manager, const char *name) {
+        const char *matched = NULL, *p;
+        int r;
+
+        assert(manager);
+        assert(name);
+
+        if (!manager->dns_deny_list_enabled)
+                return NULL;
+
+        if (set_isempty(manager->dns_deny_list) && set_isempty(manager->dns_deny_list_subdomains_only))
+                return NULL;
+
+        matched = set_get(manager->dns_deny_list, name);
+        if (matched)
+                return matched;
+
+        p = name;
+        for (;;) {
+                r = dns_name_parent(&p);
+                if (r < 0)
+                        return NULL;
+                if (r == 0)
+                        return NULL;
+
+                matched = set_get(manager->dns_deny_list, p);
+                if (matched)
+                        return matched;
+
+                matched = set_get(manager->dns_deny_list_subdomains_only, p);
+                if (matched)
+                        return matched;
+        }
+}
+
+bool manager_is_domain_in_deny_list(Manager *manager, const char *domain) {
+        return manager_find_deny_list_match(manager, domain) != NULL;
+}
+
+const char *manager_find_deny_list_match_rr(Manager *manager, const DnsResourceRecord *rr) {
+        const char *matched;
+
+        assert(manager);
+        assert(rr);
+
+        switch (rr->key->type) {
+        case DNS_TYPE_PTR:
+        case DNS_TYPE_CNAME:
+                matched = manager_find_deny_list_match(manager, rr->ptr.name);
+                if (matched)
+                        return matched;
+                break;
+        case DNS_TYPE_SRV:
+                matched = manager_find_deny_list_match(manager, rr->srv.name);
+                if (matched)
+                        return matched;
+                break;
+        case DNS_TYPE_MX:
+                matched = manager_find_deny_list_match(manager, rr->mx.exchange);
+                if (matched)
+                        return matched;
+                break;
+        case DNS_TYPE_NS:
+                matched = manager_find_deny_list_match(manager, rr->ns.name);
+                if (matched)
+                        return matched;
+                break;
+        case DNS_TYPE_DNAME:
+                matched = manager_find_deny_list_match(manager, rr->dname.name);
+                if (matched)
+                        return matched;
+                break;
+        case DNS_TYPE_SOA:
+                matched = manager_find_deny_list_match(manager, rr->soa.mname);
+                if (matched)
+                        return matched;
+                matched = manager_find_deny_list_match(manager, rr->soa.rname);
+                if (matched)
+                        return matched;
+                break;
+        case DNS_TYPE_NAPTR:
+                matched = manager_find_deny_list_match(manager, rr->naptr.replacement);
+                if (matched)
+                        return matched;
+                break;
+        case DNS_TYPE_SVCB:
+        case DNS_TYPE_HTTPS:
+                matched = manager_find_deny_list_match(manager, rr->svcb.target_name);
+                if (matched)
+                        return matched;
+                break;
+        case DNS_TYPE_TXT:
+        case DNS_TYPE_A:
+        case DNS_TYPE_AAAA:
+                matched = manager_find_deny_list_match(manager, dns_resource_key_name(rr->key));
+                if (matched)
+                        return matched;
+                break;
+        }
+
+        return NULL;
+}
+
+static int manager_filter_dns_answer(Manager *manager, DnsAnswer **answer, DnsQuery *query) {
+        _cleanup_(dns_answer_unrefp) DnsAnswer *filtered = NULL;
+        DnsAnswerItem *item;
+        const char *deny_query_name = NULL;
+        bool filtered_out = false;
+
+        assert(manager);
+        assert(answer);
+
+        if (!manager->dns_deny_list_enabled)
+                return 0;
+
+        if (set_isempty(manager->dns_deny_list) && set_isempty(manager->dns_deny_list_subdomains_only))
+                return 0;
+
+        /* Filtering only applies to A and AAAA queries. If the queried name itself is
+         * denied, suppress the entire answer even if the returned RR set only aliases to
+         * some other name. */
+        if (query) {
+                DnsQuestion *question = dns_query_question_for_protocol(query, query->answer_protocol);
+                const char *name;
+
+                if (question) {
+                        DnsResourceKey *key = dns_question_first_key(question);
+                        if (key && !IN_SET(key->type, DNS_TYPE_A, DNS_TYPE_AAAA))
+                                return 0;
+
+                        name = dns_question_first_name(question);
+                        if (name)
+                                deny_query_name = manager_find_deny_list_match(manager, name);
+                }
+        }
+
+        DNS_ANSWER_FOREACH_ITEM(item, *answer) {
+                const char *blocked = NULL;
+
+                if (deny_query_name)
+                        blocked = "queried name";
+                else
+                        blocked = manager_find_deny_list_match_rr(manager, item->rr);
+
+                if (blocked) {
+                        log_debug("Blocking DNS answer '%s' by deny list entry '%s'.",
+                                  dns_resource_key_name(item->rr->key),
+                                  blocked);
+                        filtered_out = true;
+                        continue;
+                }
+
+                int r = dns_answer_add_extend_full(&filtered, item->rr, item->ifindex, item->flags, item->rrsig, item->until);
+                if (r < 0)
+                        return r;
+        }
+
+        if (!filtered_out)
+                return 0;
+
+        *answer = TAKE_PTR(filtered);
+
+        if (query)
+                query->answer_filtered = true;
+
+        return 1;
+}
+
 int dns_query_new(
                 Manager *m,
                 DnsQuery **ret,
@@ -874,6 +1042,7 @@ static int dns_query_synthesize_reply(DnsQuery *q, DnsTransactionState *state) {
         q->answer_family = dns_synthesize_family(q->flags);
         q->answer_query_flags = SD_RESOLVED_AUTHENTICATED|SD_RESOLVED_CONFIDENTIAL|SD_RESOLVED_SYNTHETIC;
 
+        (void) manager_filter_dns_answer(q->manager, &q->answer, q);
         *state = DNS_TRANSACTION_SUCCESS;
 
         log_debug("Found synthetic success response.");
@@ -908,6 +1077,8 @@ static int dns_query_try_etc_hosts(DnsQuery *q) {
         q->answer_family = dns_synthesize_family(q->flags);
         q->answer_query_flags = SD_RESOLVED_AUTHENTICATED|SD_RESOLVED_CONFIDENTIAL|SD_RESOLVED_SYNTHETIC;
 
+        (void) manager_filter_dns_answer(q->manager, &q->answer, q);
+
         return 1;
 }
 
@@ -934,6 +1105,8 @@ static int dns_query_try_static_records(DnsQuery *q) {
         q->answer_protocol = dns_synthesize_protocol(q->flags);
         q->answer_family = dns_synthesize_family(q->flags);
         q->answer_query_flags = SD_RESOLVED_AUTHENTICATED|SD_RESOLVED_CONFIDENTIAL|SD_RESOLVED_SYNTHETIC;
+
+        (void) manager_filter_dns_answer(q->manager, &q->answer, q);
 
         return 1;
 }
@@ -1053,6 +1226,13 @@ static void on_hook_complete(HookQuery *hq, int rcode, DnsAnswer *answer, void *
         q->answer_protocol = dns_synthesize_protocol(q->flags);
         q->answer_family = dns_synthesize_family(q->flags);
         q->answer_query_flags = SD_RESOLVED_FROM_HOOK;
+
+        if (rcode == DNS_RCODE_SUCCESS) {
+                r = manager_filter_dns_answer(q->manager, &q->answer, q);
+                if (r < 0)
+                        log_warning_errno(r, "Failed to filter DNS answer, ignoring: %m");
+        }
+
         dns_query_complete(q, rcode == DNS_RCODE_SUCCESS ? DNS_TRANSACTION_SUCCESS : DNS_TRANSACTION_RCODE_FAILURE);
 }
 
@@ -1214,6 +1394,12 @@ static void dns_query_accept(DnsQuery *q, DnsQueryCandidate *c) {
         r = dns_query_synthesize_reply(q, &state);
         if (r < 0)
                 goto fail;
+
+        if (state == DNS_TRANSACTION_SUCCESS) {
+                r = manager_filter_dns_answer(q->manager, &q->answer, q);
+                if (r < 0)
+                        log_warning_errno(r, "Failed to filter DNS answer, ignoring: %m");
+        }
 
         dns_query_complete(q, state);
         return;

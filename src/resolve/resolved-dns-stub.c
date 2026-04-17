@@ -759,7 +759,7 @@ static void dns_stub_query_complete(DnsQuery *query) {
         assert(q);
         assert(q->request_packet);
 
-        if (q->question_bypass) {
+        if (q->question_bypass && !q->answer_filtered) {
                 /* This is a bypass reply. If so, let's propagate the upstream packet, if we have it and it
                  * is regular DNS. (We can't do this if the upstream packet is LLMNR or mDNS, since the
                  * packets are not 100% compatible.) */

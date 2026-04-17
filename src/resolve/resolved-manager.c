@@ -22,6 +22,7 @@
 #include "errno-util.h"
 #include "event-util.h"
 #include "fd-util.h"
+#include "fileio.h"
 #include "hostname-setup.h"
 #include "hostname-util.h"
 #include "io-util.h"
@@ -398,6 +399,110 @@ static int on_clock_change(sd_event_source *source, int fd, uint32_t revents, vo
         return manager_clock_change_listen(m);
 }
 
+static int dns_deny_list_pattern_parse(
+                const char *pattern,
+                char **ret_name,
+                bool *ret_subdomains_only) {
+        _cleanup_free_ char *name = NULL;
+        bool subdomains_only = false;
+        int r;
+
+        assert(pattern);
+        assert(ret_name);
+        assert(ret_subdomains_only);
+
+        if (startswith(pattern, "*.")) {
+                subdomains_only = true;
+                pattern += 2;
+        }
+
+        r = dns_name_normalize(pattern, 0, &name);
+        if (r < 0)
+                return r;
+
+        *ret_name = TAKE_PTR(name);
+        *ret_subdomains_only = subdomains_only;
+        return 0;
+}
+
+
+static int manager_load_dns_deny_list(Manager *m, bool first_load) {
+        _cleanup_fclose_ FILE *f = NULL;
+        int r;
+
+        assert(m);
+
+        if (m->dns_deny_list)
+                m->dns_deny_list = set_free(m->dns_deny_list);
+        if (m->dns_deny_list_subdomains_only)
+                m->dns_deny_list_subdomains_only = set_free(m->dns_deny_list_subdomains_only);
+
+        if (!m->dns_deny_list_file) {
+                if (first_load && m->dns_deny_list_enabled)
+                        log_warning("DNSFilter=yes, but DNSFilterList is not configured. DNS filtering will be disabled.");
+
+                return 0;
+        }
+
+        m->dns_deny_list = set_new(&dns_name_hash_ops_free);
+        if (!m->dns_deny_list)
+                return -ENOMEM;
+        m->dns_deny_list_subdomains_only = set_new(&dns_name_hash_ops_free);
+        if (!m->dns_deny_list_subdomains_only) {
+                m->dns_deny_list = set_free(m->dns_deny_list);
+                return -ENOMEM;
+        }
+
+        f = fopen(m->dns_deny_list_file, "re");
+        if (!f) {
+                if (errno == ENOENT)
+                        return first_load && m->dns_deny_list_enabled ?
+                                log_warning_errno(errno,
+                                                  "DNSFilter=yes, but DNSFilterList '%s' could not be found, DNS filtering will be disabled: %m",
+                                                  m->dns_deny_list_file) :
+                                0;
+
+                return log_warning_errno(errno, "Failed to open DNS deny list file '%s', ignoring: %m", m->dns_deny_list_file);
+        }
+
+        for (;;) {
+                _cleanup_free_ char *line = NULL, *normalized = NULL;
+                char *v;
+                bool subdomains_only = false;
+
+                r = read_line(f, LONG_LINE_MAX, &line);
+                if (r < 0)
+                        return log_error_errno(r, "Failed to read DNS deny list file '%s': %m", m->dns_deny_list_file);
+                if (r == 0)
+                        break;
+
+                v = strstrip(line);
+                if (isempty(v) || v[0] == '#')
+                        continue;
+
+                r = dns_deny_list_pattern_parse(v, &normalized, &subdomains_only);
+                if (r < 0) {
+                        log_warning_errno(r, "Invalid DNS deny list entry '%s', ignoring: %m", v);
+                        continue;
+                }
+
+                r = set_ensure_consume(subdomains_only ? &m->dns_deny_list_subdomains_only : &m->dns_deny_list,
+                                       &dns_name_hash_ops_free, TAKE_PTR(normalized));
+                if (r < 0)
+                        return log_oom();
+        }
+
+        if (first_load && m->dns_deny_list_enabled)
+                log_info("DNSFilter enabled, using DNSFilterList '%s' with %u entries.",
+                         m->dns_deny_list_file,
+                         set_size(m->dns_deny_list) + set_size(m->dns_deny_list_subdomains_only));
+        else
+                log_debug("Loaded %u entries from DNS deny list file '%s'.",
+                          set_size(m->dns_deny_list) + set_size(m->dns_deny_list_subdomains_only),
+                          m->dns_deny_list_file);
+        return 0;
+}
+
 static int manager_clock_change_listen(Manager *m) {
         int r;
 
@@ -681,6 +786,7 @@ static int manager_dispatch_reload_signal(sd_event_source *s, const struct signa
 
         (void) dnssd_load(m);
         (void) manager_load_delegates(m);
+        (void) manager_load_dns_deny_list(m, false);
 
         /* The default scope configuration is influenced by the manager's configuration (modes, etc.), so
          * recreate it on reload. */
@@ -774,6 +880,7 @@ int manager_new(Manager **ret) {
 
         (void) dnssd_load(m);
         (void) manager_load_delegates(m);
+        (void) manager_load_dns_deny_list(m, true);
 
         r = dns_scope_new(m, &m->unicast_scope, DNS_SCOPE_GLOBAL, /* link= */ NULL, /* delegate= */ NULL, DNS_PROTOCOL_DNS, AF_UNSPEC);
         if (r < 0)
@@ -926,6 +1033,10 @@ Manager* manager_free(Manager *m) {
         dns_trust_anchor_flush(&m->trust_anchor);
         manager_etc_hosts_flush(m);
         manager_static_records_flush(m);
+
+        free(m->dns_deny_list_file);
+        m->dns_deny_list = set_free(m->dns_deny_list);
+        m->dns_deny_list_subdomains_only = set_free(m->dns_deny_list_subdomains_only);
 
         while ((sb = hashmap_first(m->dns_service_browsers)))
                 dns_service_browser_free(sb);

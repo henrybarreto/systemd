@@ -24,6 +24,43 @@ TEST(dns_answer_add_a) {
         ASSERT_TRUE(dns_answer_contains(answer, rr));
 }
 
+TEST(dns_answer_add_extend_full_preserves_ifindex_and_rrsig) {
+        _cleanup_(dns_answer_unrefp) DnsAnswer *answer = NULL;
+        _cleanup_(dns_resource_record_unrefp) DnsResourceRecord *rr = NULL, *rrsig = NULL;
+        _cleanup_(memstream_done) MemStream ms = {};
+        _cleanup_free_ char *buf = NULL;
+        FILE *f;
+
+        ASSERT_NOT_NULL(answer = dns_answer_new(0));
+
+        ASSERT_NOT_NULL(rr = dns_resource_record_new_full(DNS_CLASS_IN, DNS_TYPE_A, "a.example.com"));
+        rr->ttl = 1200;
+        rr->a.in_addr.s_addr = htobe32(0xc0a8017f);
+
+        ASSERT_NOT_NULL(rrsig = dns_resource_record_new_full(DNS_CLASS_IN, DNS_TYPE_RRSIG, "example.com"));
+        rrsig->rrsig.type_covered = DNS_TYPE_A;
+        rrsig->rrsig.algorithm = DNSSEC_ALGORITHM_ECC;
+        rrsig->rrsig.labels = 3;
+        rrsig->rrsig.original_ttl = 1200;
+        rrsig->rrsig.expiration = 1720361303;
+        rrsig->rrsig.inception = 1717769303;
+        rrsig->rrsig.key_tag = 0x1234;
+        rrsig->rrsig.signer = strdup("example.com");
+        ASSERT_NOT_NULL(rrsig->rrsig.signer);
+        rrsig->rrsig.signature_size = 4;
+        rrsig->rrsig.signature = memdup("\x01\x02\x03\x04", rrsig->rrsig.signature_size);
+        ASSERT_NOT_NULL(rrsig->rrsig.signature);
+
+        ASSERT_OK_POSITIVE(dns_answer_add_extend_full(&answer, rr, 3, DNS_ANSWER_CACHEABLE, rrsig, USEC_INFINITY));
+        ASSERT_EQ(dns_answer_size(answer), 1u);
+
+        ASSERT_NOT_NULL(f = memstream_init(&ms));
+        dns_answer_dump(answer, f);
+        ASSERT_OK(memstream_finalize(&ms, &buf, /* ret_size= */ NULL));
+        ASSERT_STREQ(buf,
+                     "\ta.example.com IN A 192.168.1.127\t; ttl=1200 ifindex=3 rrsig cacheable\n");
+}
+
 /* ================================================================
  * dns_answer_match_key()
  * ================================================================ */
